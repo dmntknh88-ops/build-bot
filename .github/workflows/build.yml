@@ -22,6 +22,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     
     steps:
       - name: Setup Node.js
@@ -38,12 +40,16 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.22.6"
+          flutter-version: "3.24.5"
           channel: "stable"
+          cache: true
 
       - name: Verify Flutter
         run: |
+          echo "=== Flutter Version ==="
           flutter --version
+          echo ""
+          echo "=== Flutter Doctor ==="
           flutter doctor -v
 
       - name: Download ZIP project
@@ -61,19 +67,26 @@ jobs:
             --max-time 300 \
             "${{ github.event.inputs.zip_url }}" \
             -o project.zip \
-            -w "\n=== HTTP Status: %{http_code} ===\n=== Final URL: %{url_effective} ===\n=== Size: %{size_download} ===\n"
+            -w "\n=== HTTP Status: %{http_code} ===\n=== Final URL: %{url_effective} ===\n"
 
           echo ""
           echo "=== File Info ==="
           ls -lh project.zip
+          echo ""
+          echo "=== File Type ==="
           file project.zip
+          echo ""
+          echo "=== First Bytes ==="
+          xxd project.zip | head -2
 
       - name: Extract ZIP
         run: |
           echo "=== Validating ZIP ==="
           if ! unzip -t project.zip > /dev/null 2>&1; then
             echo "❌ File bukan ZIP valid!"
-            unzip -t project.zip 2>&1 || true
+            echo ""
+            echo "=== Isi file ==="
+            cat project.zip
             exit 1
           fi
           echo "✅ ZIP valid"
@@ -93,11 +106,6 @@ jobs:
             PROJECT_DIR="project_raw"
           fi
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
-          echo "✅ Project Dir: $PROJECT_DIR"
-
-          echo ""
-          echo "=== Isi Project ==="
-          ls -la "$PROJECT_DIR" | head -30
 
       - name: Analyze Project Code
         working-directory: ${{ env.PROJECT_DIR }}
@@ -105,10 +113,14 @@ jobs:
           if [ -f "pubspec.yaml" ]; then
             echo "=== Flutter Analyze ==="
             flutter analyze 2>&1 | tee analyze_report.txt || true
+            echo "[RESULT_ANALYZE]"
             cat analyze_report.txt
+            echo "[END_RESULT_ANALYZE]"
             rm -f analyze_report.txt
           else
-            echo "ℹ️ Bukan Flutter project, skip analyze"
+            echo "[RESULT_ANALYZE]"
+            echo "❌ pubspec.yaml tidak ditemukan."
+            echo "[END_RESULT_ANALYZE]"
           fi
 
       - name: Stop if Analyze Only
@@ -136,9 +148,7 @@ jobs:
             flutter build apk --${{ github.event.inputs.build_type }}
           else
             echo "✅ Native Android project detected"
-            
             GRADLE_PATH=$(find . -name "gradlew" | head -n 1)
-            
             if [ -z "$GRADLE_PATH" ]; then
               echo "❌ ERROR: gradlew tidak ditemukan!"
               echo ""
@@ -146,12 +156,8 @@ jobs:
               ls -la
               exit 1
             fi
-            
-            echo "✅ gradlew found: $GRADLE_PATH"
             GRADLE_DIR=$(dirname "$GRADLE_PATH")
-            cd "$GRADLE_DIR"
-            chmod +x gradlew
-            
+            cd "$GRADLE_DIR" && chmod +x gradlew
             if [ "${{ github.event.inputs.build_type }}" = "debug" ]; then
               ./gradlew assembleDebug
             else
@@ -159,16 +165,12 @@ jobs:
             fi
           fi
 
-      - name: Find APK
+      - name: Check APK Output
         run: |
           echo "=== Mencari APK ==="
+          APK_FOUND=$(find $GITHUB_WORKSPACE -name "*.apk" -type f | head -n 1)
           
-          APK_FOUND=$(find $GITHUB_WORKSPACE -name "*.apk" -type f)
-          APK_COUNT=$(echo "$APK_FOUND" | grep -c "." || echo "0")
-          
-          echo "📊 Total APK: $APK_COUNT"
-          
-          if [ "$APK_COUNT" -eq 0 ]; then
+          if [ -z "$APK_FOUND" ]; then
             echo "❌ ERROR: Tidak ada APK ditemukan!"
             echo ""
             echo "📂 Mencari di seluruh workspace..."
@@ -176,21 +178,16 @@ jobs:
             exit 1
           fi
           
-          APK_PATH=$(echo "$APK_FOUND" | head -n 1)
+          APK_PATH=$(echo "$APK_FOUND" | sed "s|$GITHUB_WORKSPACE/||")
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE" >> $GITHUB_ENV
           echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
-          echo "✅ APK: $APK_PATH"
+          echo "✅ APK ditemukan: $APK_PATH"
           ls -lh "$APK_PATH"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: flutter-${{ github.event.inputs.build_type }}-${{ github.event.inputs.tag }}
-          path: ${{ env.APK_PATH }}
-          retention-days: 7
+          path: ${{ env.PROJECT_DIR }}/${{ env.APK_PATH }}
+          retention-days: 1
           if-no-files-found: error
-
-      - name: Cleanup
-        if: always()
-        run: |
-          rm -rf project_raw project.zip || true
-          echo "🧹 Cleanup selesai"
