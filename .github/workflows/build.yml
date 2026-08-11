@@ -24,24 +24,60 @@ jobs:
     timeout-minutes: 30
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
     
     steps:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "18"
 
-      - name: Download ZIP project
+      - name: Download ZIP project with retry
         run: |
           echo "=== Downloading ZIP ==="
           echo "URL: ${{ github.event.inputs.zip_url }}"
-
-          curl -L \
-            -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
-            -H "Accept: application/octet-stream" \
-            "${{ github.event.inputs.zip_url }}" \
-            -o project.zip \
-            -w "\n=== HTTP Status: %{http_code} ===\n=== Final URL: %{url_effective} ===\n"
+          
+          MAX_RETRIES=3
+          RETRY_DELAY=5
+          
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo ""
+            echo "=== Attempt $i of $MAX_RETRIES ==="
+            
+            # ✅ FIX: Gunakan --retry dan --retry-delay untuk curl
+            curl -L \
+              -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
+              -H "Accept: application/octet-stream" \
+              "${{ github.event.inputs.zip_url }}" \
+              -o project.zip \
+              --retry 5 \
+              --retry-delay 3 \
+              --retry-max-time 60 \
+              --connect-timeout 30 \
+              --max-time 300 \
+              -w "\n=== HTTP Status: %{http_code} ===\n=== Final URL: %{url_effective} ===\n"
+            
+            CURL_EXIT=$?
+            
+            echo ""
+            echo "=== CURL Exit Code: $CURL_EXIT ==="
+            
+            if [ $CURL_EXIT -eq 0 ] && [ -f "project.zip" ] && [ -s "project.zip" ]; then
+              echo "✅ Download successful on attempt $i"
+              break
+            else
+              echo "❌ Download failed on attempt $i (exit code: $CURL_EXIT)"
+              rm -f project.zip
+              if [ $i -lt $MAX_RETRIES ]; then
+                echo "⏳ Waiting $RETRY_DELAY seconds before retry..."
+                sleep $RETRY_DELAY
+                RETRY_DELAY=$((RETRY_DELAY * 2))
+              else
+                echo "❌ All $MAX_RETRIES attempts failed!"
+                exit 1
+              fi
+            fi
+          done
 
           echo ""
           echo "=== File Info ==="
@@ -49,9 +85,6 @@ jobs:
           echo ""
           echo "=== File Type ==="
           file project.zip
-          echo ""
-          echo "=== First Bytes ==="
-          xxd project.zip | head -2
 
       - name: Extract ZIP
         run: |
@@ -60,7 +93,7 @@ jobs:
             echo "❌ File bukan ZIP valid!"
             echo ""
             echo "=== Isi file ==="
-            cat project.zip
+            file project.zip
             exit 1
           fi
           echo "✅ ZIP valid"
