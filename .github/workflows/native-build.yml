@@ -113,6 +113,125 @@ jobs:
           echo "📂 Isi project:"
           ls -la "$PROJECT_DIR" | head -30
 
+      - name: Fix Missing Mipmap Resources (Universal)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=== Fix Missing Mipmap Resources (Universal) ==="
+          
+          sudo apt-get update -qq
+          sudo apt-get install -y imagemagick
+          
+          # Cari folder res
+          RES_DIR=""
+          if [ -d "app/src/main/res" ]; then
+            RES_DIR="app/src/main/res"
+          else
+            RES_DIR=$(find . -type d -path "*/src/main/res" | head -1)
+          fi
+          
+          if [ -z "$RES_DIR" ] || [ ! -d "$RES_DIR" ]; then
+            echo "❌ ERROR: Folder res tidak ditemukan!"
+            exit 1
+          fi
+          
+          echo "RES_DIR = $RES_DIR"
+          
+          # Buat semua density folder
+          for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            mkdir -p "$RES_DIR/mipmap-$density"
+          done
+          
+          # Fungsi generate icon
+          create_icon() {
+            local name=$1
+            local color=${2:-"#3DDC84"}
+            
+            for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+              case $density in
+                mdpi)    size=48  ;;
+                hdpi)    size=72  ;;
+                xhdpi)   size=96  ;;
+                xxhdpi)  size=144 ;;
+                xxxhdpi) size=192 ;;
+              esac
+              
+              # Skip kalau sudah ada
+              if [ -f "$RES_DIR/mipmap-$density/${name}.png" ]; then
+                continue
+              fi
+              
+              convert -size ${size}x${size} xc:"$color" \
+                -fill white -gravity center -pointsize $((size/4)) \
+                -annotate +0+0 "APP" \
+                "$RES_DIR/mipmap-$density/${name}.png"
+            done
+            echo "  → Created: $name"
+          }
+          
+          echo ""
+          echo "🔍 Mencari semua referensi @mipmap di AndroidManifest..."
+          
+          # Cari AndroidManifest.xml
+          MANIFEST=$(find . -name "AndroidManifest.xml" | head -1)
+          
+          if [ -z "$MANIFEST" ]; then
+            echo "⚠️ AndroidManifest.xml tidak ditemukan, membuat icon default saja"
+            create_icon "ic_launcher" "#3DDC84"
+            create_icon "ic_launcher_round" "#3DDC84"
+          else
+            echo "Manifest: $MANIFEST"
+            
+            # Ambil semua nama resource mipmap yang direferensikan
+            # Contoh: @mipmap/ic_launcher → ic_launcher
+            MISSING_ICONS=$(grep -oE '@mipmap/[a-zA-Z0-9_]+' "$MANIFEST" | sed 's/@mipmap\///' | sort -u)
+            
+            if [ -z "$MISSING_ICONS" ]; then
+              echo "Tidak ada referensi @mipmap ditemukan"
+            else
+              echo "Ditemukan referensi mipmap:"
+              echo "$MISSING_ICONS"
+              echo ""
+              
+              for icon in $MISSING_ICONS; do
+                # Cek apakah file benar-benar sudah ada di salah satu density
+                EXISTS=false
+                for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+                  if [ -f "$RES_DIR/mipmap-$density/${icon}.png" ] || [ -f "$RES_DIR/mipmap-$density/${icon}.webp" ]; then
+                    EXISTS=true
+                    break
+                  fi
+                done
+                
+                if [ "$EXISTS" = false ]; then
+                  # Warna berbeda biar gampang bedain
+                  case $icon in
+                    *whatsapp*)   color="#25D366" ;;
+                    *youtube*)    color="#FF0000" ;;
+                    *instagram*)  color="#E1306C" ;;
+                    *telegram*)   color="#0088CC" ;;
+                    *xnxx*|*xxx*) color="#111111" ;;
+                    *round*)      color="#3DDC84" ;;
+                    *)            color="#3DDC84" ;;
+                  esac
+                  
+                  create_icon "$icon" "$color"
+                else
+                  echo "  ✓ Sudah ada: $icon"
+                fi
+              done
+            fi
+          fi
+          
+          # Pastikan minimal launcher icon selalu ada
+          create_icon "ic_launcher" "#3DDC84"
+          create_icon "ic_launcher_round" "#3DDC84"
+          
+          echo ""
+          echo "=== Ringkasan icon yang ada ==="
+          find "$RES_DIR"/mipmap-* -name "*.png" -o -name "*.webp" | sort
+          echo ""
+          echo "✅ Fix mipmap selesai (universal)"
+
       - name: Fix Gradle Wrapper
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
@@ -165,10 +284,10 @@ jobs:
           
           if [ "${{ github.event.inputs.build_type }}" = "debug" ]; then
             echo "🏗️ Running ./gradlew assembleDebug..."
-            ./gradlew assembleDebug
+            ./gradlew assembleDebug --stacktrace
           else
             echo "🏗️ Running ./gradlew assembleRelease..."
-            ./gradlew assembleRelease
+            ./gradlew assembleRelease --stacktrace
           fi
           
           if [ $? -ne 0 ]; then
