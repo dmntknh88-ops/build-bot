@@ -21,7 +21,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     
@@ -29,7 +29,26 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "20"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.5"
+          channel: "stable"
+          cache: true
+
+      - name: Verify Flutter
+        run: |
+          echo "=== Verifying Flutter ==="
+          flutter --version
+          flutter doctor -v
 
       - name: Download ZIP project
         run: |
@@ -39,75 +58,77 @@ jobs:
           curl -L \
             -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
             -H "Accept: application/octet-stream" \
+            --fail \
+            --retry 3 \
+            --retry-delay 3 \
+            --connect-timeout 30 \
+            --max-time 180 \
             "${{ github.event.inputs.zip_url }}" \
             -o project.zip \
-            -w "\n=== HTTP Status: %{http_code} ===\n=== Final URL: %{url_effective} ===\n"
+            -w "\nHTTP Status: %{http_code}\nSize: %{size_download}\n"
 
           echo ""
-          echo "=== File Info ==="
-          ls -lh project.zip
-          echo ""
-          echo "=== File Type ==="
-          file project.zip
-          echo ""
-          echo "=== First Bytes ==="
-          xxd project.zip | head -2
+          echo "File size: $(ls -lh project.zip | awk '{print $5}')"
+          echo "File type: $(file project.zip | cut -d: -f2-)"
+          
+          if [ ! -f "project.zip" ] || [ ! -s "project.zip" ]; then
+            echo "❌ ERROR: Gagal download ZIP!"
+            exit 1
+          fi
+          echo "✅ Download selesai"
 
-      - name: Extract ZIP
+      - name: Validate & Extract ZIP
         run: |
           echo "=== Validating ZIP ==="
+          
+          MAGIC=$(xxd -l 4 -p project.zip 2>/dev/null || echo "00000000")
+          echo "Magic bytes: $MAGIC"
+          
+          if [ "$MAGIC" != "504b0304" ] && [ "$MAGIC" != "504b0506" ] && [ "$MAGIC" != "504b0708" ]; then
+            echo "❌ ERROR: Bukan file ZIP valid!"
+            exit 1
+          fi
+          
           if ! unzip -t project.zip > /dev/null 2>&1; then
-            echo "❌ File bukan ZIP valid!"
-            echo ""
-            echo "=== Isi file ==="
-            cat project.zip
+            echo "❌ ERROR: ZIP corrupt!"
+            unzip -t project.zip 2>&1 || true
             exit 1
           fi
           echo "✅ ZIP valid"
-
-          echo ""
+          
           echo "=== Extracting ZIP ==="
           unzip -q project.zip -d project_raw
-
-          echo ""
-          echo "=== Mengunci Project Dir ==="
-          SUB_DIR_COUNT=$(find project_raw -maxdepth 1 -mindepth 1 -type d | wc -l)
-          FILE_COUNT=$(find project_raw -maxdepth 1 -mindepth 1 -type f | wc -l)
-          
-          if [ "$SUB_DIR_COUNT" -eq 1 ] && [ "$FILE_COUNT" -eq 0 ]; then
-            PROJECT_DIR=$(find project_raw -maxdepth 1 -mindepth 1 -type d | head -n 1)
-          else
-            PROJECT_DIR="project_raw"
+          if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Gagal ekstrak ZIP!"
+            exit 1
           fi
+          echo "✅ Ekstraksi selesai"
+          
+          echo "=== Menentukan project directory ==="
+          
+          if [ -f "project_raw/pubspec.yaml" ]; then
+            PROJECT_DIR="project_raw"
+          else
+            PUBSPEC_PATH=$(find project_raw -name "pubspec.yaml" | head -1)
+            if [ -n "$PUBSPEC_PATH" ]; then
+              PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
+            else
+              echo "❌ ERROR: pubspec.yaml tidak ditemukan!"
+              exit 1
+            fi
+          fi
+          
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: "temurin"
-          java-version: "17"
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@main
-        with:
-          flutter-version: "3.41.9"
-          channel: "stable"
-          cache: true
+          echo "✅ Project Dir: $PROJECT_DIR"
 
       - name: Analyze Project Code
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          if [ -f "pubspec.yaml" ]; then
-            flutter analyze > analyze_report.txt 2>&1 || true
-            echo "[RESULT_ANALYZE]"
-            cat analyze_report.txt
-            echo "[END_RESULT_ANALYZE]"
-            rm -f analyze_report.txt
-          else
-            echo "[RESULT_ANALYZE]"
-            echo "❌ pubspec.yaml tidak ditemukan."
-            echo "[END_RESULT_ANALYZE]"
-          fi
+          echo "=== Flutter Analyze ==="
+          flutter analyze 2>&1 | tee analyze_report.txt || true
+          echo ""
+          echo "Analyze Result:"
+          cat analyze_report.txt
 
       - name: Stop if Analyze Only
         if: ${{ github.event.inputs.only_analyze == 'true' }}
@@ -116,37 +137,45 @@ jobs:
       - name: Get dependencies
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          if [ -f "pubspec.yaml" ]; then
-            timeout 120s flutter pub get || echo "⚠️ Lanjut..."
+          echo "=== Getting dependencies ==="
+          flutter pub get
+          if [ $? -ne 0 ]; then
+            echo "❌ ERROR: flutter pub get gagal!"
+            exit 1
           fi
+          echo "✅ Dependencies installed"
 
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          if [ -f "pubspec.yaml" ]; then
-            flutter build apk --${{ github.event.inputs.build_type }}
-          else
-            GRADLE_PATH=$(find . -name "gradlew" | head -n 1)
-            GRADLE_DIR=$(dirname "$GRADLE_PATH")
-            cd "$GRADLE_DIR" && chmod +x gradlew
-            if [ "${{ github.event.inputs.build_type }}" = "debug" ]; then
-              ./gradlew assembleDebug
-            else
-              ./gradlew assembleRelease
-            fi
+          echo "=== Building APK ==="
+          echo "Build type: ${{ github.event.inputs.build_type }}"
+          
+          flutter build apk --${{ github.event.inputs.build_type }}
+          if [ $? -ne 0 ]; then
+            echo "❌ ERROR: Flutter build gagal!"
+            exit 1
           fi
+          echo "✅ Build selesai"
 
-      - name: Check APK Output
+      - name: Find APK
         run: |
-          APK_FOUND=$(find $GITHUB_WORKSPACE -name "*.apk" | head -n 1)
-          APK_PATH=$(echo "$APK_FOUND" | sed "s|$GITHUB_WORKSPACE/||")
-          echo "PROJECT_DIR=$GITHUB_WORKSPACE" >> $GITHUB_ENV
-          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
+          echo "=== Mencari APK ==="
+          
+          APK_FOUND=$(find $GITHUB_WORKSPACE -name "*.apk" -type f | head -n 1)
+          
+          if [ -z "$APK_FOUND" ]; then
+            echo "❌ ERROR: Tidak ada APK ditemukan!"
+            exit 1
+          fi
+          
+          echo "APK_PATH=$APK_FOUND" >> $GITHUB_ENV
+          echo "✅ APK ditemukan: $APK_FOUND"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: flutter-${{ github.event.inputs.build_type }}-${{ github.event.inputs.tag }}
-          path: ${{ env.PROJECT_DIR }}/${{ env.APK_PATH }}
-          retention-days: 1
+          path: ${{ env.APK_PATH }}
+          retention-days: 7
           if-no-files-found: error
