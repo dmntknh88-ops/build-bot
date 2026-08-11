@@ -6,16 +6,20 @@ on:
       web_url:
         description: 'URL Website'
         required: true
+        type: string
       app_name:
         description: 'Nama Aplikasi'
         required: true
+        type: string
       icon_url:
         description: 'Icon Url'
         required: true
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -26,7 +30,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.44.0'
+          flutter-version: '3.22.6'
           channel: stable
           cache: true
 
@@ -207,11 +211,7 @@ jobs:
         run: |
           mkdir -p myapp/assets/icon
           sudo apt-get install -y imagemagick
-          curl -L \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/octet-stream" \
-            "${{ github.event.inputs.icon_url }}" \
-            -o myapp/assets/icon/icon_raw
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/octet-stream" "${{ github.event.inputs.icon_url }}" -o myapp/assets/icon/icon_raw
           convert myapp/assets/icon/icon_raw -resize 1024x1024 myapp/assets/icon/icon.png
 
       - name: Generate Icons
@@ -233,3 +233,5 @@ jobs:
         with:
           name: web2apk-release
           path: myapp/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 7
+          if-no-files-found: error
