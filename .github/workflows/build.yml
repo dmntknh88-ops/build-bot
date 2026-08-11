@@ -36,83 +36,54 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     
     steps:
-      # ─── 1. SETUP NODE.JS ──────────────────────────────────────────────
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # ─── 2. DEBUG ENVIRONMENT ──────────────────────────────────────────
       - name: Debug Environment
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🐛 DEBUG ENVIRONMENT"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "GitHub Workspace: $GITHUB_WORKSPACE"
-          echo "Runner OS: $(uname -a)"
-          echo "Node version: $(node -v)"
-          echo "NPM version: $(npm -v)"
-          echo "Disk space:"
-          df -h
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "URL: ${{ github.event.inputs.zip_url }}"
+          echo "Tag: ${{ github.event.inputs.tag }}"
+          echo "Build Type: ${{ github.event.inputs.build_type }}"
 
-      # ─── 3. DOWNLOAD ZIP PROJECT ──────────────────────────────────────
       - name: Download ZIP project
         id: download
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📥 DOWNLOADING PROJECT ZIP"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "URL: ${{ github.event.inputs.zip_url }}"
-          echo ""
           
-          if [ -z "${{ github.event.inputs.zip_url }}" ]; then
+          ZIP_URL="${{ github.event.inputs.zip_url }}"
+          echo "URL: $ZIP_URL"
+          
+          if [ -z "$ZIP_URL" ]; then
             echo "❌ ERROR: ZIP URL kosong!"
             exit 1
           fi
           
-          if [[ ! "${{ github.event.inputs.zip_url }}" =~ ^https?:// ]]; then
-            echo "❌ ERROR: URL tidak valid (harus http atau https)!"
+          if [[ ! "$ZIP_URL" =~ ^https?:// ]]; then
+            echo "❌ ERROR: URL tidak valid!"
             exit 1
           fi
           
-          echo "📥 Downloading..."
-          curl -L \
-            -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
-            -H "Accept: application/octet-stream" \
-            --fail \
-            --retry 5 \
-            --retry-delay 5 \
-            --connect-timeout 60 \
-            --max-time 300 \
-            --verbose \
-            "${{ github.event.inputs.zip_url }}" \
-            -o project.zip \
-            -w "\n📊 HTTP Status: %{http_code}\n📊 Final URL: %{url_effective}\n📊 Size: %{size_download}\n📊 Speed: %{speed_download}\n" 2>&1 | tee download.log
+          TOKEN="${{ secrets.GH_TOKEN }}"
+          if [ -n "$TOKEN" ]; then
+            curl -L -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" --fail --retry 5 --retry-delay 5 --connect-timeout 60 --max-time 300 -o project.zip "$ZIP_URL" -w "\nHTTP Status: %{http_code}\nSize: %{size_download}\n"
+          else
+            curl -L -H "Accept: application/octet-stream" --fail --retry 5 --retry-delay 5 --connect-timeout 60 --max-time 300 -o project.zip "$ZIP_URL" -w "\nHTTP Status: %{http_code}\nSize: %{size_download}\n"
+          fi
           
-          if [ ! -f "project.zip" ]; then
-            echo "❌ ERROR: File project.zip tidak ditemukan!"
-            echo ""
-            echo "📄 Download log:"
-            cat download.log
+          if [ ! -f "project.zip" ] || [ ! -s "project.zip" ]; then
+            echo "❌ ERROR: Gagal download ZIP!"
             exit 1
           fi
           
-          if [ ! -s "project.zip" ]; then
-            echo "❌ ERROR: File project.zip kosong (0 bytes)!"
-            echo ""
-            echo "📄 Download log:"
-            cat download.log
-            exit 1
-          fi
-          
-          echo ""
-          echo "✅ Download selesai!"
-          echo "📦 File size: $(ls -lh project.zip | awk '{print $5}')"
-          echo "📦 File type: $(file project.zip | cut -d: -f2-)"
-          echo "DOWNLOAD_STATUS=success" >> $GITHUB_ENV
+          echo "✅ Download selesai! Size: $(ls -lh project.zip | awk '{print $5}')"
 
-      # ─── 4. VALIDATE & EXTRACT ZIP ─────────────────────────────────────
       - name: Validate & Extract ZIP
         id: extract
         run: |
@@ -121,54 +92,19 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           
           MAGIC=$(xxd -l 4 -p project.zip 2>/dev/null || echo "00000000")
-          echo "Magic bytes: $MAGIC"
-          
           if [ "$MAGIC" != "504b0304" ] && [ "$MAGIC" != "504b0506" ] && [ "$MAGIC" != "504b0708" ]; then
-            echo "❌ ERROR: Bukan file ZIP yang valid!"
-            echo ""
-            echo "📄 Isi file (10 baris pertama):"
-            head -10 project.zip
+            echo "❌ ERROR: Bukan file ZIP valid!"
             exit 1
           fi
-          echo "✅ Magic number valid"
           
-          echo ""
-          echo "🔍 Testing ZIP integrity..."
           if ! unzip -t project.zip > /dev/null 2>&1; then
-            echo "❌ ERROR: ZIP corrupt atau tidak valid!"
-            echo ""
-            echo "📄 Detail error:"
-            unzip -t project.zip 2>&1 || true
+            echo "❌ ERROR: ZIP corrupt!"
             exit 1
           fi
-          echo "✅ ZIP valid"
           
-          echo ""
-          echo "📂 Extracting ZIP..."
           unzip -q project.zip -d project_raw
-          EXIT_CODE=$?
+          if [ $? -ne 0 ]; then echo "❌ ERROR: Gagal ekstrak ZIP!"; exit 1; fi
           
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "❌ ERROR: Gagal ekstrak ZIP (kode: $EXIT_CODE)"
-            exit 1
-          fi
-          echo "✅ Ekstraksi selesai"
-          
-          echo ""
-          echo "📂 Cek hasil ekstraksi..."
-          FILE_COUNT=$(find project_raw -type f | wc -l)
-          DIR_COUNT=$(find project_raw -maxdepth 1 -mindepth 1 -type d | wc -l)
-          
-          echo "📊 Total file: $FILE_COUNT"
-          echo "📊 Total folder: $DIR_COUNT"
-          
-          if [ "$FILE_COUNT" -eq 0 ] && [ "$DIR_COUNT" -eq 0 ]; then
-            echo "❌ ERROR: ZIP kosong tidak ada file/folder!"
-            exit 1
-          fi
-          
-          echo ""
-          echo "🔍 Menentukan project directory..."
           SUB_DIR_COUNT=$(find project_raw -maxdepth 1 -mindepth 1 -type d | wc -l)
           SUB_FILE_COUNT=$(find project_raw -maxdepth 1 -mindepth 1 -type f | wc -l)
           
@@ -181,33 +117,23 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
           echo "✅ Project directory: $PROJECT_DIR"
           
-          echo ""
-          echo "📂 Isi project directory:"
-          ls -la "$PROJECT_DIR" | head -30
-          
           if [ -f "$PROJECT_DIR/pubspec.yaml" ]; then
             echo "✅ pubspec.yaml ditemukan!"
             echo "IS_FLUTTER=true" >> $GITHUB_ENV
-            echo ""
-            echo "📄 Isi pubspec.yaml (10 baris):"
-            head -10 "$PROJECT_DIR/pubspec.yaml"
           else
-            echo "ℹ️ pubspec.yaml tidak ditemukan"
             echo "IS_FLUTTER=false" >> $GITHUB_ENV
             if [ -f "$PROJECT_DIR/build.gradle" ] || [ -f "$PROJECT_DIR/app/build.gradle" ]; then
-              echo "✅ build.gradle ditemukan! (Native Android project)"
+              echo "✅ build.gradle ditemukan! (Native Android)"
               echo "IS_NATIVE=true" >> $GITHUB_ENV
             fi
           fi
 
-      # ─── 5. SETUP JAVA ──────────────────────────────────────────────────
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
           java-version: "17"
 
-      # ─── 6. SETUP FLUTTER ──────────────────────────────────────────────
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -215,133 +141,50 @@ jobs:
           channel: "stable"
           cache: true
 
-      # ─── 7. ANALYZE PROJECT CODE ──────────────────────────────────────
       - name: Analyze Project Code
         if: env.IS_FLUTTER == 'true'
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔍 FLUTTER ANALYZE"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           flutter analyze 2>&1 | tee analyze_report.txt || true
-          echo ""
           echo "📊 ANALYZE RESULT:"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           cat analyze_report.txt
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      # ─── 8. STOP IF ANALYZE ONLY ──────────────────────────────────────
       - name: Stop if Analyze Only
         if: ${{ github.event.inputs.only_analyze == 'true' }}
-        run: |
-          echo "⏹️ Analyze only mode, stopping..."
-          exit 1
+        run: exit 1
 
-      # ─── 9. GET DEPENDENCIES ──────────────────────────────────────────
       - name: Get Dependencies
         if: env.IS_FLUTTER == 'true'
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📦 INSTALLING DEPENDENCIES"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          
-          if [ ! -f "pubspec.yaml" ]; then
-            echo "❌ ERROR: pubspec.yaml tidak ditemukan!"
-            exit 1
-          fi
-          
-          echo "📦 Running flutter pub get..."
-          flutter pub get
-          EXIT_CODE=$?
-          
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "❌ ERROR: flutter pub get gagal (kode: $EXIT_CODE)"
-            echo ""
-            echo "📄 Cek pubspec.yaml:"
-            cat pubspec.yaml
-            exit 1
-          fi
-          echo "✅ Dependencies installed!"
+          if [ ! -f "pubspec.yaml" ]; then exit 1; fi
+          flutter pub get || exit 1
 
-      # ─── 10. BUILD APK ──────────────────────────────────────────────────
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🏗️ BUILDING APK"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📌 Build type: ${{ github.event.inputs.build_type }}"
-          echo "📌 Project: ${{ env.PROJECT_DIR }}"
-          echo ""
-          
           if [ -f "pubspec.yaml" ]; then
-            echo "✅ Flutter project detected"
-            echo "🏗️ Running flutter build apk --${{ github.event.inputs.build_type }}..."
             flutter build apk --${{ github.event.inputs.build_type }}
-            EXIT_CODE=$?
-            if [ $EXIT_CODE -ne 0 ]; then
-              echo "❌ ERROR: Flutter build gagal (kode: $EXIT_CODE)"
-              exit $EXIT_CODE
-            fi
           else
-            echo "✅ Native Android project detected"
             GRADLE_PATH=$(find . -name "gradlew" | head -n 1)
-            if [ -z "$GRADLE_PATH" ]; then
-              echo "❌ ERROR: Tidak ditemukan gradlew!"
-              echo ""
-              echo "📂 Isi direktori:"
-              ls -la
-              exit 1
-            fi
-            echo "✅ gradlew found: $GRADLE_PATH"
+            if [ -z "$GRADLE_PATH" ]; then echo "❌ ERROR: gradlew tidak ditemukan!"; exit 1; fi
             GRADLE_DIR=$(dirname "$GRADLE_PATH")
-            cd "$GRADLE_DIR"
-            chmod +x gradlew
+            cd "$GRADLE_DIR" && chmod +x gradlew
             if [ "${{ github.event.inputs.build_type }}" = "debug" ]; then
-              echo "🏗️ Running ./gradlew assembleDebug..."
               ./gradlew assembleDebug
             else
-              echo "🏗️ Running ./gradlew assembleRelease..."
               ./gradlew assembleRelease
             fi
-            EXIT_CODE=$?
-            if [ $EXIT_CODE -ne 0 ]; then
-              echo "❌ ERROR: Gradle build gagal (kode: $EXIT_CODE)"
-              exit $EXIT_CODE
-            fi
           fi
-          echo "✅ Build selesai!"
 
-      # ─── 11. FIND APK ──────────────────────────────────────────────────
       - name: Find APK
         id: find_apk
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔍 SEARCHING FOR APK"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          
-          APK_FILES=$(find $GITHUB_WORKSPACE -name "*.apk" -type f)
-          APK_COUNT=$(echo "$APK_FILES" | grep -c "." || echo "0")
-          
-          echo "📊 Total APK found: $APK_COUNT"
-          
-          if [ $APK_COUNT -eq 0 ]; then
-            echo "❌ ERROR: Tidak ada APK ditemukan!"
-            echo ""
-            echo "📂 Mencari di seluruh workspace..."
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            find $GITHUB_WORKSPACE -type f | head -50
-            exit 1
-          fi
-          
-          APK_PATH=$(echo "$APK_FILES" | head -n 1)
-          
-          echo "✅ APK found: $APK_PATH"
-          echo "📦 APK size: $(ls -lh "$APK_PATH" | awk '{print $5}')"
+          APK_PATH=$(find $GITHUB_WORKSPACE -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then echo "❌ ERROR: APK tidak ditemukan!"; exit 1; fi
           echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
+          echo "✅ APK found: $APK_PATH ($(ls -lh "$APK_PATH" | awk '{print $5}'))"
 
-      # ─── 12. UPLOAD APK ARTIFACT ──────────────────────────────────────
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -350,35 +193,6 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      # ─── 13. DEBUG INFO (ON FAILURE) ──────────────────────────────────
-      - name: Debug Info (on failure)
-        if: failure()
-        run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🐛 DEBUG INFO (BUILD FAILED)"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          echo "📂 Current directory:"
-          pwd
-          echo ""
-          echo "📂 Workspace content:"
-          ls -la $GITHUB_WORKSPACE
-          echo ""
-          echo "📂 Project directory (${{ env.PROJECT_DIR }}):"
-          ls -la "${{ env.PROJECT_DIR }}" || echo "Project directory not found!"
-          echo ""
-          echo "📄 pubspec.yaml:"
-          cat "${{ env.PROJECT_DIR }}/pubspec.yaml" 2>/dev/null || echo "pubspec.yaml not found!"
-          echo ""
-          echo "📄 build.gradle:"
-          find $GITHUB_WORKSPACE -name "build.gradle" -exec head -20 {} \; 2>/dev/null || echo "build.gradle not found!"
-          echo ""
-          echo "📄 Download log:"
-          cat download.log 2>/dev/null || echo "download.log not found!"
-
-      # ─── 14. CLEANUP ──────────────────────────────────────────────────
       - name: Cleanup
         if: always()
-        run: |
-          rm -rf project_raw project.zip download.log || true
-          echo "🧹 Cleanup selesai"
+        run: rm -rf project_raw project.zip || true
