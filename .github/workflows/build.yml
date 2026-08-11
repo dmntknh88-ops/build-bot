@@ -6,17 +6,27 @@ on:
       zip_url:
         description: "URL download ZIP project Flutter"
         required: true
+        type: string
       tag:
         description: "Tag build"
         required: true
+        type: string
       build_type:
         description: "debug / release"
         required: true
         default: "release"
+        type: choice
+        options:
+          - debug
+          - release
       only_analyze:
         description: "Hanya jalankan analyze (true/false)"
         required: false
         default: "false"
+        type: choice
+        options:
+          - true
+          - false
 
 jobs:
   build:
@@ -26,11 +36,13 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     
     steps:
+      # ─── 1. SETUP NODE.JS ──────────────────────────────────────────────
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
+      # ─── 2. DEBUG ENVIRONMENT ──────────────────────────────────────────
       - name: Debug Environment
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -44,6 +56,7 @@ jobs:
           df -h
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+      # ─── 3. DOWNLOAD ZIP PROJECT ──────────────────────────────────────
       - name: Download ZIP project
         id: download
         run: |
@@ -64,12 +77,18 @@ jobs:
           fi
           
           echo "📥 Downloading..."
-          curl -L             -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}"             -H "Accept: application/octet-stream"             --fail             --retry 5             --retry-delay 5             --connect-timeout 60             --max-time 300             --verbose             "${{ github.event.inputs.zip_url }}"             -o project.zip             -w "
-📊 HTTP Status: %{http_code}
-📊 Final URL: %{url_effective}
-📊 Size: %{size_download}
-📊 Speed: %{speed_download}
-" 2>&1 | tee download.log
+          curl -L \
+            -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
+            -H "Accept: application/octet-stream" \
+            --fail \
+            --retry 5 \
+            --retry-delay 5 \
+            --connect-timeout 60 \
+            --max-time 300 \
+            --verbose \
+            "${{ github.event.inputs.zip_url }}" \
+            -o project.zip \
+            -w "\n📊 HTTP Status: %{http_code}\n📊 Final URL: %{url_effective}\n📊 Size: %{size_download}\n📊 Speed: %{speed_download}\n" 2>&1 | tee download.log
           
           if [ ! -f "project.zip" ]; then
             echo "❌ ERROR: File project.zip tidak ditemukan!"
@@ -93,6 +112,7 @@ jobs:
           echo "📦 File type: $(file project.zip | cut -d: -f2-)"
           echo "DOWNLOAD_STATUS=success" >> $GITHUB_ENV
 
+      # ─── 4. VALIDATE & EXTRACT ZIP ─────────────────────────────────────
       - name: Validate & Extract ZIP
         id: extract
         run: |
@@ -180,12 +200,14 @@ jobs:
             fi
           fi
 
+      # ─── 5. SETUP JAVA ──────────────────────────────────────────────────
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
           java-version: "17"
 
+      # ─── 6. SETUP FLUTTER ──────────────────────────────────────────────
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -193,6 +215,7 @@ jobs:
           channel: "stable"
           cache: true
 
+      # ─── 7. ANALYZE PROJECT CODE ──────────────────────────────────────
       - name: Analyze Project Code
         if: env.IS_FLUTTER == 'true'
         working-directory: ${{ env.PROJECT_DIR }}
@@ -207,12 +230,14 @@ jobs:
           cat analyze_report.txt
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+      # ─── 8. STOP IF ANALYZE ONLY ──────────────────────────────────────
       - name: Stop if Analyze Only
         if: ${{ github.event.inputs.only_analyze == 'true' }}
         run: |
           echo "⏹️ Analyze only mode, stopping..."
           exit 1
 
+      # ─── 9. GET DEPENDENCIES ──────────────────────────────────────────
       - name: Get Dependencies
         if: env.IS_FLUTTER == 'true'
         working-directory: ${{ env.PROJECT_DIR }}
@@ -239,6 +264,7 @@ jobs:
           fi
           echo "✅ Dependencies installed!"
 
+      # ─── 10. BUILD APK ──────────────────────────────────────────────────
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
@@ -287,6 +313,7 @@ jobs:
           fi
           echo "✅ Build selesai!"
 
+      # ─── 11. FIND APK ──────────────────────────────────────────────────
       - name: Find APK
         id: find_apk
         run: |
@@ -314,6 +341,7 @@ jobs:
           echo "📦 APK size: $(ls -lh "$APK_PATH" | awk '{print $5}')"
           echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
 
+      # ─── 12. UPLOAD APK ARTIFACT ──────────────────────────────────────
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -322,6 +350,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      # ─── 13. DEBUG INFO (ON FAILURE) ──────────────────────────────────
       - name: Debug Info (on failure)
         if: failure()
         run: |
@@ -342,11 +371,12 @@ jobs:
           cat "${{ env.PROJECT_DIR }}/pubspec.yaml" 2>/dev/null || echo "pubspec.yaml not found!"
           echo ""
           echo "📄 build.gradle:"
-          find $GITHUB_WORKSPACE -name "build.gradle" -exec head -20 {} ; 2>/dev/null || echo "build.gradle not found!"
+          find $GITHUB_WORKSPACE -name "build.gradle" -exec head -20 {} \; 2>/dev/null || echo "build.gradle not found!"
           echo ""
           echo "📄 Download log:"
           cat download.log 2>/dev/null || echo "download.log not found!"
 
+      # ─── 14. CLEANUP ──────────────────────────────────────────────────
       - name: Cleanup
         if: always()
         run: |
