@@ -113,13 +113,15 @@ jobs:
           echo "📂 Isi project:"
           ls -la "$PROJECT_DIR" | head -30
 
-      - name: Fix Mipmap Icons
+      - name: Fix Mipmap Icons (Dinamis sesuai file di ZIP)
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          echo "=== Fix Mipmap Icons ==="
+          echo "=== Fix Mipmap Icons (Dinamis) ==="
+          
           sudo apt-get update -qq
           sudo apt-get install -y imagemagick
           
+          # Cari folder res
           RES_DIR=""
           if [ -d "app/src/main/res" ]; then
             RES_DIR="app/src/main/res"
@@ -134,35 +136,134 @@ jobs:
           
           echo "RES_DIR = $RES_DIR"
           
+          # Buat density
           for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
             mkdir -p "$RES_DIR/mipmap-$density"
           done
           
-          IMAGES=$(find . .. ../.. -maxdepth 4 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) 2>/dev/null | head -1)
+          # Fungsi convert
+          convert_to_mipmap() {
+            local src="$1"
+            local name="$2"
+            
+            echo "  → $src  ==>  $name"
+            
+            for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+              case $density in
+                mdpi)    size=48  ;;
+                hdpi)    size=72  ;;
+                xhdpi)   size=96  ;;
+                xxhdpi)  size=144 ;;
+                xxxhdpi) size=192 ;;
+              esac
+              
+              convert "$src" \
+                -resize ${size}x${size}^ \
+                -gravity center \
+                -extent ${size}x${size} \
+                -background none \
+                "$RES_DIR/mipmap-$density/${name}.png"
+            done
+          }
           
-          if [ -z "$IMAGES" ]; then
-            echo "❌ Tidak ada gambar ditemukan!"
+          echo ""
+          echo "1. Mencari semua gambar di ZIP..."
+          
+          mapfile -t IMAGES < <(find . .. ../.. -maxdepth 4 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) 2>/dev/null | sort -u)
+          
+          echo "Ditemukan ${#IMAGES[@]} gambar:"
+          printf '   %s\n' "${IMAGES[@]}"
+          
+          if [ ${#IMAGES[@]} -eq 0 ]; then
+            echo "❌ Tidak ada gambar sama sekali!"
             exit 1
           fi
           
-          echo "Gambar utama: $IMAGES"
+          echo ""
+          echo "2. Membaca icon yang dibutuhkan dari AndroidManifest..."
           
-          for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
-            case $density in
-              mdpi)    size=48  ;;
-              hdpi)    size=72  ;;
-              xhdpi)   size=96  ;;
-              xxhdpi)  size=144 ;;
-              xxxhdpi) size=192 ;;
-            esac
-            
-            convert "$IMAGES" \
-              -resize ${size}x${size}^ \
-              -gravity center \
-              -extent ${size}x${size} \
-              -background none \
-              "$RES_DIR/mipmap-$density/ic_launcher.png"
+          MANIFEST=$(find . -name "AndroidManifest.xml" | head -1)
+          NEEDED=()
+          
+          if [ -n "$MANIFEST" ]; then
+            mapfile -t NEEDED < <(grep -oE '@mipmap/[a-zA-Z0-9_]+' "$MANIFEST" | sed 's/@mipmap\///' | sort -u)
+          fi
+          
+          # Pastikan launcher selalu ada
+          NEEDED+=("ic_launcher" "ic_launcher_round")
+          mapfile -t NEEDED < <(printf '%s\n' "${NEEDED[@]}" | sort -u)
+          
+          echo "Icon yang dibutuhkan:"
+          printf '   %s\n' "${NEEDED[@]}"
+          
+          echo ""
+          echo "3. Mencocokkan gambar dengan icon..."
+          
+          # Cari gambar terbaik untuk launcher (prioritas nama yang mengandung sync / icon / logo / app)
+          LAUNCHER_SRC=""
+          for img in "${IMAGES[@]}"; do
+            base=$(basename "$img" | tr '[:upper:]' '[:lower:]')
+            if [[ "$base" == *sync* ]] || [[ "$base" == *icon* ]] || [[ "$base" == *logo* ]] || [[ "$base" == *app* ]]; then
+              LAUNCHER_SRC="$img"
+              break
+            fi
           done
+          
+          # Kalau tidak ketemu, ambil gambar pertama
+          if [ -z "$LAUNCHER_SRC" ]; then
+            LAUNCHER_SRC="${IMAGES[0]}"
+          fi
+          
+          echo "Gambar utama (launcher): $LAUNCHER_SRC"
+          
+          for icon in "${NEEDED[@]}"; do
+            # Cek apakah sudah ada
+            exists=false
+            for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+              if [ -f "$RES_DIR/mipmap-$d/${icon}.png" ] || [ -f "$RES_DIR/mipmap-$d/${icon}.webp" ]; then
+                exists=true
+                break
+              fi
+            done
+            if [ "$exists" = true ]; then
+              echo "  ✓ Sudah ada: $icon"
+              continue
+            fi
+            
+            MATCHED=""
+            
+            # Cocokkan berdasarkan kata kunci di nama file
+            icon_lower=$(echo "$icon" | tr '[:upper:]' '[:lower:]')
+            
+            for img in "${IMAGES[@]}"; do
+              base=$(basename "$img" | tr '[:upper:]' '[:lower:]')
+              
+              if [[ "$icon_lower" == *whatsapp* && "$base" == *whatsapp* ]]; then
+                MATCHED="$img"; break
+              elif [[ "$icon_lower" == *youtube* && "$base" == *youtube* ]]; then
+                MATCHED="$img"; break
+              elif [[ "$icon_lower" == *instagram* && "$base" == *instagram* ]]; then
+                MATCHED="$img"; break
+              elif [[ "$icon_lower" == *telegram* && "$base" == *telegram* ]]; then
+                MATCHED="$img"; break
+              elif [[ "$icon_lower" == *xnxx* || "$icon_lower" == *xxx* ]] && [[ "$base" == *xnxx* || "$base" == *xxx* ]]; then
+                MATCHED="$img"; break
+              fi
+            done
+            
+            # Kalau tidak ketemu spesifik, pakai gambar utama
+            if [ -z "$MATCHED" ]; then
+              MATCHED="$LAUNCHER_SRC"
+            fi
+            
+            convert_to_mipmap "$MATCHED" "$icon"
+          done
+          
+          echo ""
+          echo "=== Hasil akhir ==="
+          find "$RES_DIR"/mipmap-* -name "*.png" | sort
+          echo ""
+          echo "✅ Selesai - icon sudah disesuaikan dengan file yang ada di masing-masing ZIP"
 
       - name: Fix Gradle Wrapper
         working-directory: ${{ env.PROJECT_DIR }}
