@@ -96,7 +96,6 @@ jobs:
             PROJECT_DIR="project_raw"
           fi
 
-          # Fallback: cari pubspec.yaml lebih dalam jika belum ketemu
           if [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
             FOUND=$(find project_raw -name "pubspec.yaml" -type f | head -n 1)
             if [ -n "$FOUND" ]; then
@@ -187,7 +186,6 @@ jobs:
 
           if [ -z "$APK_FOUND" ]; then
             echo "❌ Tidak ada file APK yang ditemukan!"
-            echo "Mencari file terkait:"
             find $GITHUB_WORKSPACE \( -name "*.apk" -o -name "pubspec.yaml" -o -name "gradlew" \) | head -20 || true
             exit 1
           fi
