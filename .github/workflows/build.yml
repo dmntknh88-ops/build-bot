@@ -21,7 +21,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 40
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     
@@ -51,7 +51,11 @@ jobs:
           echo ""
           echo "=== File Info ==="
           ls -lh project.zip || true
+          echo ""
+          echo "=== File Type ==="
           file project.zip || true
+          echo ""
+          echo "=== First Bytes ==="
           xxd project.zip | head -2 || true
 
           if [ ! -f "project.zip" ] || [ ! -s "project.zip" ]; then
@@ -64,19 +68,25 @@ jobs:
           echo "=== Validating ZIP ==="
           if ! unzip -t project.zip > /dev/null 2>&1; then
             echo "❌ File bukan ZIP valid!"
+            echo ""
+            echo "=== Preview isi file ==="
             head -c 300 project.zip || true
             exit 1
           fi
           echo "✅ ZIP valid"
 
+          echo ""
+          echo "=== Extracting ZIP ==="
           rm -rf project_raw
           unzip -q project.zip -d project_raw
+
           if [ $? -ne 0 ]; then
             echo "❌ Gagal extract ZIP!"
             exit 1
           fi
 
-          echo "=== Menentukan Project Dir ==="
+          echo ""
+          echo "=== Mengunci Project Dir ==="
           SUB_DIR_COUNT=$(find project_raw -maxdepth 1 -mindepth 1 -type d | wc -l)
           FILE_COUNT=$(find project_raw -maxdepth 1 -mindepth 1 -type f | wc -l)
           
@@ -86,6 +96,7 @@ jobs:
             PROJECT_DIR="project_raw"
           fi
 
+          # Fallback: cari pubspec.yaml lebih dalam jika belum ketemu
           if [ ! -f "$PROJECT_DIR/pubspec.yaml" ]; then
             FOUND=$(find project_raw -name "pubspec.yaml" -type f | head -n 1)
             if [ -n "$FOUND" ]; then
@@ -95,7 +106,7 @@ jobs:
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
           echo "✅ Project Dir: $PROJECT_DIR"
-          ls -la "$PROJECT_DIR" | head -15 || true
+          ls -la "$PROJECT_DIR" | head -12 || true
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -137,115 +148,21 @@ jobs:
         run: |
           if [ -f "pubspec.yaml" ]; then
             echo "=== Running flutter pub get ==="
-            timeout 180s flutter pub get || {
-              echo "⚠️ pub get gagal, mencoba cache repair..."
+            timeout 150s flutter pub get || {
+              echo "⚠️ pub get gagal / timeout, mencoba cache repair..."
               flutter pub cache repair || true
-              timeout 180s flutter pub get || echo "⚠️ Lanjut ke tahap berikutnya..."
+              timeout 150s flutter pub get || echo "⚠️ Tetap lanjut ke build..."
             }
           else
-            echo "⚠️ Bukan project Flutter, skip pub get"
+            echo "⚠️ Tidak ada pubspec.yaml, skip pub get"
           fi
 
-      - name: Auto Fix Flutter Issues
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          echo "=== 🔧 Auto Fix Flutter Issues ==="
-          
-          if [ ! -f "pubspec.yaml" ]; then
-            echo "Bukan project Flutter → skip"
-            exit 0
-          fi
-
-          mkdir -p android/app/src/main
-
-          # 1. local.properties
-          if [ ! -f "android/local.properties" ]; then
-            echo "→ Membuat android/local.properties"
-            echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
-            echo "sdk.dir=$ANDROID_HOME" >> android/local.properties
-          fi
-
-          # 2. Fix build.gradle (app level)
-          if [ -f "android/app/build.gradle" ]; then
-            echo "→ Memperbaiki android/app/build.gradle"
-
-            # minSdkVersion minimal 21
-            sed -i 's/minSdkVersion [0-9]\+/minSdkVersion 21/g' android/app/build.gradle || true
-            sed -i 's/minSdk [0-9]\+/minSdk 21/g' android/app/build.gradle || true
-
-            # compileSdk & targetSdk
-            sed -i 's/compileSdkVersion [0-9]\+/compileSdkVersion 34/g' android/app/build.gradle || true
-            sed -i 's/targetSdkVersion [0-9]\+/targetSdkVersion 34/g' android/app/build.gradle || true
-            sed -i 's/compileSdk [0-9]\+/compileSdk 34/g' android/app/build.gradle || true
-            sed -i 's/targetSdk [0-9]\+/targetSdk 34/g' android/app/build.gradle || true
-
-            # multiDexEnabled
-            if ! grep -q "multiDexEnabled" android/app/build.gradle; then
-              sed -i '/defaultConfig {/a\        multiDexEnabled true' android/app/build.gradle || true
-              echo "  + multiDexEnabled true"
-            fi
-
-            # namespace (untuk AGP 8+)
-            if ! grep -q "namespace" android/app/build.gradle; then
-              PACKAGE=$(grep -oP 'package="\K[^"]+' android/app/src/main/AndroidManifest.xml 2>/dev/null | head -1 || echo "com.example.app")
-              sed -i "/android {/a\    namespace \"$PACKAGE\"" android/app/build.gradle || true
-              echo "  + namespace: $PACKAGE"
-            fi
-          fi
-
-          # 3. Fix AndroidManifest.xml (android:exported)
-          if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
-            echo "→ Memperbaiki AndroidManifest.xml"
-            # Tambahkan android:exported="true" pada activity yang belum punya
-            sed -i 's/<activity\([^>]*\)>/<activity\1 android:exported="true">/g' android/app/src/main/AndroidManifest.xml 2>/dev/null || true
-            # Hindari duplikat
-            sed -i 's/android:exported="true" android:exported="true"/android:exported="true"/g' android/app/src/main/AndroidManifest.xml || true
-          fi
-
-          # 4. Pastikan settings.gradle & gradle wrapper ada
-          if [ ! -f "android/settings.gradle" ] && [ ! -f "android/settings.gradle.kts" ]; then
-            echo "→ Membuat settings.gradle dasar"
-            cat > android/settings.gradle << 'EOF'
-          include ':app'
-          EOF
-          fi
-
-          echo "✅ Auto Fix selesai"
-
-      - name: Build APK (dengan Retry + Auto Fix)
+      - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           if [ -f "pubspec.yaml" ]; then
-            echo "=== 🏗️ Building Flutter APK ==="
-            
-            BUILD_CMD="flutter build apk --${{ github.event.inputs.build_type }}"
-            
-            # Percobaan 1
-            if $BUILD_CMD; then
-              echo "✅ Build berhasil (percobaan 1)"
-            else
-              echo "⚠️ Build gagal → menjalankan Clean + Fix tambahan + Retry..."
-              
-              flutter clean || true
-              flutter pub get || true
-              
-              # Fix tambahan saat retry
-              if [ -f "android/app/build.gradle" ]; then
-                sed -i 's/compileSdkVersion [0-9]\+/compileSdkVersion 34/g' android/app/build.gradle || true
-                sed -i 's/targetSdkVersion [0-9]\+/targetSdkVersion 34/g' android/app/build.gradle || true
-                sed -i 's/compileSdk [0-9]\+/compileSdk 34/g' android/app/build.gradle || true
-                sed -i 's/targetSdk [0-9]\+/targetSdk 34/g' android/app/build.gradle || true
-                sed -i 's/minSdkVersion [0-9]\+/minSdkVersion 21/g' android/app/build.gradle || true
-              fi
-              
-              # Pastikan local.properties
-              mkdir -p android
-              echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
-              echo "sdk.dir=$ANDROID_HOME" >> android/local.properties
-              
-              echo "=== 🔄 Retry Build ==="
-              $BUILD_CMD
-            fi
+            echo "=== Building dengan Flutter ==="
+            flutter build apk --${{ github.event.inputs.build_type }}
           else
             echo "=== Mencoba build Native (Gradle) ==="
             GRADLE_PATH=$(find . -name "gradlew" | head -n 1)
@@ -270,6 +187,7 @@ jobs:
 
           if [ -z "$APK_FOUND" ]; then
             echo "❌ Tidak ada file APK yang ditemukan!"
+            echo "Mencari file terkait:"
             find $GITHUB_WORKSPACE \( -name "*.apk" -o -name "pubspec.yaml" -o -name "gradlew" \) | head -20 || true
             exit 1
           fi
